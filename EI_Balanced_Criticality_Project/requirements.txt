@@ -1,0 +1,17 @@
+# BrainPy E-I Balanced Criticality Project
+# Python 3.9+
+
+# Core dependencies
+brainpy>=2.4.0
+jax>=0.4.0
+jaxlib>=0.4.0
+numpy>=1.23.0
+
+# Analysis
+scipy>=1.10.0
+
+# Visualization (optional, for future plotting)
+matplotlib>=3.7.0
+
+# Utilities
+tqdm>=4.65.0
