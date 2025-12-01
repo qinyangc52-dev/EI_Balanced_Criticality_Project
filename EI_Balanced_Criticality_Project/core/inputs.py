@@ -1,5 +1,5 @@
 # %% Stage 2: Core Components - External Poisson Input
-# ============ CORRECTED: Removed Double Counting Bug ============
+# FIXED: Normalization factor and removed double counting
 
 import brainpy as bp
 import brainpy.math as bm
@@ -24,7 +24,9 @@ class PoissonInput(bp.DynamicalSystem):
         self.tau_r = TAU_RISE
         self.tau_d = TAU_DECAY_E
         self.E_rev = V_REV_E
-        self.norm = 1.0 / (self.tau_d - self.tau_r)
+        
+        # FIXED NORMALIZATION:
+        self.norm = 1.0 / (self.tau_d * self.tau_r)
         
         # State variables
         self.h_E = bm.Variable(bm.zeros(N_E))
@@ -36,17 +38,13 @@ class PoissonInput(bp.DynamicalSystem):
         dt = bp.share['dt']
         
         # Poisson spike generation
-        # p_spike is the probability of ONE source firing
-        # Total probability = p_spike * N_ext
         p_spike = self.rate * dt / 1000.0
         p_total = p_spike * self.N_ext
         
-        # Generate boolean spikes (True if ANY of the 160 sources fired)
+        # Generate boolean spikes
         ext_spikes_E = bm.random.rand(N_E) < p_total
         ext_spikes_I = bm.random.rand(N_I) < p_total
         
-        # [FIX]: Just convert boolean to float (0.0 or 1.0). 
-        # DO NOT multiply by N_ext again!
         ext_E = bm.asarray(ext_spikes_E, dtype=float) 
         ext_I = bm.asarray(ext_spikes_I, dtype=float)
         
@@ -54,7 +52,7 @@ class PoissonInput(bp.DynamicalSystem):
         self.h_E.value = self.h_E + (-self.h_E / self.tau_r * dt + ext_E)
         self.g_E.value = self.g_E + (-self.g_E / self.tau_d * dt + self.h_E)
         
-        # Apply synaptic weight (G_EXT_E is already scaled in config)
+        # Apply synaptic weight
         g_E_norm = self.g_E * self.g_ext_E * self.norm
         I_ext_E = g_E_norm * (self.E_rev - self.network.E.V)
         
