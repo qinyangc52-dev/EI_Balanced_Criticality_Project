@@ -1,9 +1,10 @@
 # %% Stage 4: Analysis - Avalanche Statistical Metrics
-# Computes distributions and criticality measures
+# Computes distributions and criticality measures using MLE (Rigorous Method)
 
 import numpy as np
+import powerlaw  # 需要 pip install powerlaw
 from pathlib import Path
-from configs.model_config import PROCESSED_DATA_DIR, POWERLAW_FIT_MIN_SIZE
+from configs.model_config import PROCESSED_DATA_DIR
 from analysis.preprocessing import preprocess_single_tau
 from utils.io_manager import save_pkl
 
@@ -11,16 +12,20 @@ from utils.io_manager import save_pkl
 def compute_avalanche_distribution(sizes, durations):
     """
     Compute probability distributions of avalanche size and duration.
+    For visualization purposes.
     """
     # Size distribution
     size_counts = np.bincount(sizes.astype(int))
     size_values = np.arange(len(size_counts))
-    size_probs = size_counts / np.sum(size_counts)
+    # Avoid division by zero
+    total_size = np.sum(size_counts)
+    size_probs = size_counts / total_size if total_size > 0 else size_counts
     
     # Duration distribution
     duration_counts = np.bincount(durations.astype(int))
     duration_values = np.arange(len(duration_counts))
-    duration_probs = duration_counts / np.sum(duration_counts)
+    total_dur = np.sum(duration_counts)
+    duration_probs = duration_counts / total_dur if total_dur > 0 else duration_counts
     
     return {
         'size_values': size_values,
@@ -30,58 +35,47 @@ def compute_avalanche_distribution(sizes, durations):
     }
 
 
-def fit_powerlaw_simple(data, x_min=None):
+def fit_powerlaw_mle(data, name="Data"):
     """
-    Simple power-law fitting using linear regression in log-log space.
-    For more rigorous fitting, use powerlaw package (left for future).
+    Rigorous Power-law fitting using Maximum Likelihood Estimation (MLE).
+    Uses the 'powerlaw' library to automatically find optimal x_min.
     
-    Returns exponent and goodness-of-fit metric.
+    Args:
+        data: Array of integers (sizes or durations)
+        name: String for logging
+        
+    Returns:
+        exponent (alpha), KS_distance, x_min
     """
-    if x_min is None:
-        x_min = POWERLAW_FIT_MIN_SIZE
+    # 移除 0 或负数，因为幂律定义在 x > 0
+    data = data[data > 0]
     
-    # Filter data >= x_min
-    data_filtered = data[data >= x_min]
-    
-    if len(data_filtered) < 10:
-        return None, None
-    
-    # Compute histogram
-    counts, bins = np.histogram(data_filtered, bins=50)
-    bin_centers = (bins[:-1] + bins[1:]) / 2
-    
-    # Remove zeros
-    mask = counts > 0
-    x = bin_centers[mask]
-    y = counts[mask]
-    
-    if len(x) < 5:
-        return None, None
-    
-    # Log-log linear fit
-    log_x = np.log10(x)
-    log_y = np.log10(y)
-    
-    coeffs = np.polyfit(log_x, log_y, 1)
-    exponent = -coeffs[0]  # negative slope is the exponent
-    
-    # R-squared
-    y_pred = 10 ** np.polyval(coeffs, log_x)
-    ss_res = np.sum((y - y_pred) ** 2)
-    ss_tot = np.sum((y - np.mean(y)) ** 2)
-    r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
-    
-    return exponent, r_squared
+    if len(data) < 50:
+        print(f"  [Warning] Not enough data for MLE fit for {name} (n={len(data)})")
+        return None, None, None
+
+    try:
+        # discrete=True 表示数据是整数（粒子数或时间步数）
+        # xmin=None 让库自动寻找最小化 KS 距离的最佳截断点
+        results = powerlaw.Fit(data, discrete=True, verbose=False)
+        
+        alpha = results.power_law.alpha
+        ks = results.power_law.KS()
+        xmin = results.xmin
+        
+        return alpha, ks, xmin
+        
+    except Exception as e:
+        print(f"  [Error] MLE fit failed for {name}: {e}")
+        return None, None, None
 
 
 def compute_crackle_noise_relation(sizes, durations):
     """
-    Compute crackle noise relation: 1/sigma_vz ~ (alpha - 1) / (tau - 1)
-    
-    Where sigma_vz is the scaling exponent: <S>(T) ~ T^(1/sigma_vz)
-    This is measured empirically from the data.
+    Compute crackle noise relation scaling exponent: <S>(T) ~ T^gamma
+    We simply use log-log linear regression here as it's a scaling relation, 
+    not a probability distribution.
     """
-    # Group sizes by duration
     unique_durations = np.unique(durations)
     
     if len(unique_durations) < 3:
@@ -92,21 +86,22 @@ def compute_crackle_noise_relation(sizes, durations):
     
     for dur in unique_durations:
         mask = durations == dur
-        if np.sum(mask) >= 3:  # need sufficient samples
+        if np.sum(mask) >= 5:  # Require at least 5 samples per duration bin
             mean_sizes.append(np.mean(sizes[mask]))
             valid_durations.append(dur)
     
     if len(valid_durations) < 3:
         return None
     
-    # Log-log fit: log(<S>) = (1/sigma_vz) * log(T)
+    # Log-log fit
     log_dur = np.log10(valid_durations)
     log_size = np.log10(mean_sizes)
     
     coeffs = np.polyfit(log_dur, log_size, 1)
-    sigma_vz_inv = coeffs[0]
+    slope = coeffs[0]
     
-    return sigma_vz_inv
+    # slope represents 1 / (sigma * nu * z)
+    return slope
 
 
 def analyze_single_tau(tau_d_I: float):
@@ -115,36 +110,53 @@ def analyze_single_tau(tau_d_I: float):
     """
     print(f"\nAnalyzing tau_d_I = {tau_d_I:.1f} ms...")
     
-    # Preprocessing
+    # 1. Preprocessing (Load raw spikes and bin them)
     stats = preprocess_single_tau(tau_d_I)
-    
     sizes = stats['avalanche_sizes']
     durations = stats['avalanche_durations']
     
-    # Distributions
+    # 2. Compute Distributions (for plotting)
     dist = compute_avalanche_distribution(sizes, durations)
     
-    # Power-law fitting
-    size_exponent, size_r2 = fit_powerlaw_simple(sizes)
-    duration_exponent, duration_r2 = fit_powerlaw_simple(durations)
+    # 3. Rigorous Power-law Fitting (MLE)
+    # The paper's Size Exponent is 'tau', Duration Exponent is 'alpha'
+    size_tau, size_ks, size_xmin = fit_powerlaw_mle(sizes, "Size")
+    dur_alpha, dur_ks, dur_xmin = fit_powerlaw_mle(durations, "Duration")
     
-    # Crackle noise relation
-    sigma_vz_inv = compute_crackle_noise_relation(sizes, durations)
+    # 4. Crackle Noise Scaling
+    scaling_gamma = compute_crackle_noise_relation(sizes, durations)
     
+    # 5. Check Crackling Noise Relation Validity
+    # Relation: (alpha - 1) / (tau - 1) approx= gamma
+    if size_tau and dur_alpha and scaling_gamma:
+        predicted_gamma = (dur_alpha - 1) / (size_tau - 1)
+        scaling_error = abs(predicted_gamma - scaling_gamma)
+    else:
+        predicted_gamma = None
+        scaling_error = None
+
     # Combine results
     results = {
         'tau_d_I': tau_d_I,
         'preprocessing': stats,
         'distribution': dist,
-        'size_exponent': size_exponent,
-        'size_r2': size_r2,
-        'duration_exponent': duration_exponent,
-        'duration_r2': duration_r2,
-        'sigma_vz_inv': sigma_vz_inv
+        'size_exponent': size_tau,   # tau
+        'size_ks': size_ks,
+        'size_xmin': size_xmin,
+        'duration_exponent': dur_alpha, # alpha
+        'duration_ks': dur_ks,
+        'duration_xmin': dur_xmin,
+        'scaling_gamma': scaling_gamma, # 1/svz
+        'predicted_gamma': predicted_gamma,
+        'scaling_error': scaling_error
     }
     
-    print(f"  Size exponent: {size_exponent:.3f} (R2={size_r2:.3f})" if size_exponent else "  Size: no fit")
-    print(f"  Duration exponent: {duration_exponent:.3f} (R2={duration_r2:.3f})" if duration_exponent else "  Duration: no fit")
+    # Print readable report
+    print(f"  [Result] Size Exponent (tau):   {size_tau:.3f} (KS={size_ks:.3f}, xmin={size_xmin})" if size_tau else "  [Result] Size: Failed")
+    print(f"  [Result] Dur. Exponent (alpha): {dur_alpha:.3f} (KS={dur_ks:.3f}, xmin={dur_xmin})" if dur_alpha else "  [Result] Dur.: Failed")
+    
+    if scaling_error is not None:
+        print(f"  [Check] Crackling Relation: LHS={scaling_gamma:.3f} vs RHS={predicted_gamma:.3f} (Err={scaling_error:.3f})")
     
     # Save processed results
     Path(PROCESSED_DATA_DIR).mkdir(parents=True, exist_ok=True)

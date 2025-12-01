@@ -71,10 +71,22 @@ def main(tau_d_I=None, run_all=False, analyze_only=False):
         
         print(f"\n  tau_d_I = {tau:.1f} ms:")
         print(f"    Avalanches: {n_aval}")
+        
+        # FIXED: Use 'size_ks' instead of 'size_r2'
         if exp_size:
-            print(f"    Size exponent: {exp_size:.3f} (R²={results['size_r2']:.3f})")
+            print(f"    Size exponent (tau):   {exp_size:.3f} (KS={results['size_ks']:.3f})")
+        else:
+            print("    Size exponent: Failed")
+            
+        # FIXED: Use 'duration_ks' instead of 'duration_r2'
         if exp_dur:
-            print(f"    Duration exponent: {exp_dur:.3f} (R²={results['duration_r2']:.3f})")
+            print(f"    Duration exponent (alpha): {exp_dur:.3f} (KS={results['duration_ks']:.3f})")
+        else:
+             print("    Duration exponent: Failed")
+
+        # Optional: Print Crackling Noise Relation Check
+        if results.get('scaling_error') is not None:
+            print(f"    Crackling Error: {results['scaling_error']:.3f}")
     
     print("\n" + "="*70)
     print("Data saved to:")

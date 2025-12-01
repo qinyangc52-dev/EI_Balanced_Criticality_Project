@@ -8,7 +8,7 @@ from configs.model_config import TAU_RISE
 class DualExpCondSyn(bp.Projection):
     def __init__(self, pre, post, prob, g_max, tau_decay, E_rev, name=None):
         super().__init__(name=name)
-        self.pre = pre
+        self.pre = pre   #前突触神经元群（提供spike输入）
         self.post = post
         self.g_max = g_max
         self.tau_r = TAU_RISE
@@ -24,7 +24,7 @@ class DualExpCondSyn(bp.Projection):
         
         # Standard Normalization from Paper Eq A3
         # Ensures the integral of the kernel is 1.0 (Unit Charge)
-        self.norm = 1.0 / (self.tau_d - self.tau_r)
+        self.norm = 1.0 / (self.tau_d * self.tau_r)
     
     def update(self):
         pre_spike = bm.asarray(self.pre.spike.value, dtype=float)
