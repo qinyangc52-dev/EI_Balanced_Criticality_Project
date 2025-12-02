@@ -1,5 +1,6 @@
+# 文件路径: experiments/run_pca_multistimuli.py
 # %% Experiment: Neural Representation PCA Analysis
-# FIXED: bp.share access and JIT compatibility
+# FIXED: Removed placeholders causing SyntaxError
 # Replicates Figure 3(c): PCA projection of avalanches under different inputs
 
 import sys
@@ -10,6 +11,7 @@ import matplotlib.pyplot as plt
 import brainpy as bp
 import brainpy.math as bm
 from sklearn.decomposition import PCA 
+from mpl_toolkits.mplot3d import Axes3D
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -46,15 +48,14 @@ class FrozenPoissonInput(bp.DynamicalSystem):
         self.g_I = bm.Variable(bm.zeros(N_I))
 
     def update(self):
-        # FIX: Use dictionary access for shared variables
         t_idx = bp.share['i']
         dt = bp.share['dt']
         
-        # FIX: Removed Python 'if' check to support JIT compilation.
-        # Ensure inputs are generated with sufficient length (steps >= duration/dt).
-        # BrainPy's DSRunner guarantees t_idx is within range if duration matches.
-        ext_E = self.spikes_E[t_idx]
-        ext_I = self.spikes_I[t_idx]
+        # Ensure safe indexing
+        idx = bm.minimum(t_idx, self.spikes_E.shape[0] - 1)
+        
+        ext_E = self.spikes_E[idx]
+        ext_I = self.spikes_I[idx]
 
         # Update Conductance (Double Exponential)
         self.h_E.value = self.h_E + (-self.h_E / self.tau_r * dt + ext_E)
@@ -92,8 +93,6 @@ def run_pca_experiment():
     for i in range(n_signals):
         # Generate random Poisson spikes
         prob = EXT_RATE * DT / 1000.0 * N_EXT
-        # Generate boolean mask then convert to float
-        # Note: We generate exactly 'steps' length to match runner iteration
         spikes_E = np.random.rand(steps, N_E) < prob
         spikes_I = np.random.rand(steps, N_I) < prob
         signals_E.append(spikes_E)
@@ -109,20 +108,17 @@ def run_pca_experiment():
     for sig_id in range(n_signals):
         print(f"  Processing Signal {sig_id+1}/{n_signals}...", end="", flush=True)
         
-        # Prepare input for this signal
         current_input_E = signals_E[sig_id]
         current_input_I = signals_I[sig_id]
         
         for trial in range(n_trials):
-            # Clean up
             bm.clear_name_cache()
             
             # Init Network
             net = BalancedNetwork(tau_d_I=tau_crit)
-            # Use our custom frozen input
             inp = FrozenPoissonInput(net, current_input_E, current_input_I)
             
-            # Runner
+            # === FIXED RUNNER DEFINITION ===
             runner = bp.DSRunner(
                 bp.DynSysGroup(net=net, inp=inp),
                 monitors={'spikes': net.E.spike},
@@ -133,7 +129,6 @@ def run_pca_experiment():
             runner.run(duration)
             
             # Collect Activity Vector
-            # We count total spikes per neuron during the stimulus (Rate Vector)
             spikes = runner.mon['spikes'] # (Time, N)
             rate_vector = np.sum(spikes, axis=0) # (N,)
             
@@ -175,7 +170,6 @@ def run_pca_experiment():
     ax.set_ylabel('PC 2')
     ax.set_zlabel('PC 3')
     ax.set_title(f'Neural Representation PCA ($\\tau_I^d={tau_crit}$ms)', fontsize=15, fontweight='bold')
-    # ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
     
     save_path = Path(FIGURE_DIR) / "PCA_Representation_3D.png"
     plt.savefig(save_path, dpi=300, bbox_inches='tight')

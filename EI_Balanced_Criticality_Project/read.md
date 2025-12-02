@@ -1,158 +1,198 @@
-这是一个基于 BrainPy 框架复现论文《Critical Avalanches in Excitation-Inhibition Balanced Networks Reconcile Response Reliability with Sensitivity for Optimal Neural Representation》的软件设计说明书。
+project_root/
+├── README.md                  # 项目说明书
+│                              
+├── main.py                    # 主程序入口
+│                                负责完整工作流：模拟 → 分析 → 输出统计结果
+│                                支持 --all（全参数扫描） 或 --tau（单参数调试）
+├── quick_test.py              # 快速验证脚本
+│                                短时程（200ms）模拟，检查发放率是否合理（1-5 Hz）
+│
+├── configs/
+│   └── model_config.py        # 参数单点真相源（SSOT）
+│                                定义 N, p, τ, g, TAU_DECAY_I_LIST, 路径等所有全局常量
+│
+├── core/
+│   └── inputs.py              # 外部泊松输入生成器
+│                                PoissonInput 类，生成背景电导噪声（带正确归一化）
+│
+├── models/
+│   ├── neurons.py             # LIF 神经元实现（带绝对不应期）
+│   │                            LifRefE（兴奋性）、LifRefI（抑制性）
+│   ├── synapses.py            # 双指数电导突触模型
+│   │                            DualExpCondSyn（Rise + Decay）
+│   └── network.py             # 完整兴奋-抑制平衡网络组装
+│                                BalancedNetwork（包含 E/I 神经元 + 4种突触连接）
+│
+├── experiments/
+│   └── phase_transition_runner.py   # 相变扫描主运行器
+│                                      遍历所有 τ^d_I，分块模拟（防OOM），输出原始脉冲 .npz
+│
+├── analysis/
+│   ├── preprocessing.py       # 预处理 + 雪崩检测
+│         ├─ 去温（warmup）
+│         ├─ 计算人口 ISI → 确定分箱宽度 Δt（论文 Appendix B）
+│         └─ 空箱分隔法检测雪崩 → 提取大小 S 和时长 T
+│   └── avalanche_metrics.py   # 临界性指标计算
+│         ├─ MLE 拟合幂律（τ, α）
+│         ├─ KS 距离
+│         └─ Crackling Noise Relation 验证 + 标度误差
+│                                输出 .pkl 统计结果
+│
+├── visualization/
+│   ├── plot_criticality.py         # 主图（Fig 1 复现）
+│         ├─ 光栅图（亚/临/超临界示例）
+│         ├─ 雪崩大小/时长分布
+│         └─ KS 距离 vs τ^d_I 曲线（定位临界点）
+│   └── plot_scaling_relation.py    # 补充图 S2 复现
+│                                      <S>(T) 标度关系，验证 γ = (α-1)/(τ-1)
+│
+├── utils/
+│   └── io_manager.py          # 统一的 I/O 封装
+│                                save/load npz、pkl，自动创建文件夹，跨平台路径兼容
+│
+└── data/
+    ├── raw/                   # 原始脉冲数据（.npz）
+    └── processed/             # 分析后的统计结果（.pkl）
+└── figures/                   # 自动生成的出版级图片（.png/.pdf）
 
-本文档旨在提供一个严谨的、可追踪的开发指南。
 
----
 
-# 软件设计说明书：兴奋-抑制平衡网络中的临界雪崩复现
+## 敏感性与可靠性的测量
+本节描述了在兴奋-抑制（E-I）平衡网络模型和分支过程模型中测量**敏感性**（sensitivity）和**可靠性**（reliability）的方法，如 Yang et al. (2025) 论文所述。这些指标用于评估网络对外界信号的响应，突出临界态如何调和敏感性（检测小扰动的能力）与可靠性（跨试验一致响应）。
+### 平衡网络中的敏感性
+- **方法**：向网络中额外添加频率为 25 Hz 的泊松输入。
+- **定义**：兴奋性神经元在接收到该额外输入后，平均发放率的相对变化量。
+- **目的**：量化网络对扰动的敏感响应，在临界态附近达到最大值。
+### 平衡网络中的可靠性
+- **方法**：针对固定的网络连接结构，进行 100 次独立试验，每次添加相同的“frozen” 25 Hz 泊松信号。
+- **定义**：跨试验的小时间窗发放率的 Fano 因子的倒数（1 / Fano factor，其中 Fano factor = variance / mean）。类似于先前研究 [12] 的定义。
+  - 时间窗：50 ms，滑动步长 20 ms。
+  - Fano 因子在所有时间窗上取平均。
+- **目的**：测量对相同刺激的试验间一致性，在平衡模型的临界态附近达到最大值。
+### 分支过程模型中的敏感性
+- **方法**：为了模拟平衡网络中的时序信号，通过在泊松分布时间点随机激活神经元引入输入。
+  - 从均值为 3 的泊松分布中抽取间隔序列 {I_k}（Pois(μ = 3)）。
+  - 计算输入时刻 T_i = Σ_{k=1}^i I_k。
+  - 对于每个 T_i，随机选择神经元 N_i 并将其状态置为激活（S_{N_i}(T_i) = 1）[见图 S5(a)]。
+- **定义**：接收信号后的激发活动概率与自发活动概率之差。
+  - 自发活动概率：初始激活所有神经元，让系统收敛至稳态所得。
+  - 这不同于传统动态敏感性 [10]（整个模拟中固定单个节点激活）；此处使用稀疏输入，导致峰值敏感性略向超临界区偏移。
+- **目的**：评估对稀疏扰动的响应，在临界态附近达到最大值，但因概率本质而有所差异。
 
-**版本**：1.0
-**目标框架**：BrainPy
-**参考文献**：Yang, Z., Liang, J., & Zhou, C. (2025). *Physical Review Letters 134, 028401*.
+### 分支过程模型中的可靠性
+- **方法**：针对固定的网络连接结构，进行 100 次独立试验，每次添加与敏感性测量相同的 frozen 泊松信号 [图 S5(a)]。
+- **定义**：跨试验的小时间窗发放率的 Fano 因子的倒数，与平衡模型一致。
+- **目的**：评估一致性，但不同于平衡模型，在临界态可靠性最低（因固有随机性）。
 
----
+### 模拟结果与可视化
+- 图 1(c) 和 1(f) 的结果为不同输入信号和网络结构下的平均值，阴影区域表示标准差。
+- 此表示方式与图 2(a)、2(g)、3(a)、3(b) 和 4(c) 一致。
+- **实现注意**：在项目中，可将这些测量集成到 `analysis/` 模块（例如扩展 `avalanche_metrics.py` 以计算敏感性和可靠性）。使用 frozen 泊松信号确保可重复性，并对多试验/网络取平均。
 
-## 1. 系统概述
+完整细节请参阅原论文 Appendix B。如需实现，确保扫描参数如 τ^d_I 以观察相变。
 
-本项目旨在构建一个生物物理合理的兴奋-抑制（E-I）平衡神经网络模型，通过调节抑制性突触的衰减时间常数（$\tau^d_I$），复现网络从亚临界状态到超临界状态的相变过程，并验证临界状态下的幂律雪崩分布特性。
 
-### 开发阶段规划
-*   **阶段一**：模型参数配置与数学定义
-*   **阶段二**：网络结构与动力学实现
-*   **阶段三**：模拟运行与数据采集
-*   **阶段四**：雪崩分析算法实现
 
----
 
-## 2. 阶段一：模型参数配置与数学定义
+ python experiments/sensitivity_reliability.py
 
-本阶段的目标是建立所有模型常数的单一事实来源（SSOT），确保所有数值严格对应论文描述。
+============================================================
+Running Balanced Network: Sensitivity & Reliability
+============================================================
+Generating Frozen Signal Template...
 
-### 2.1 网络拓扑参数
-| 参数符号 | 参数值 | 描述 | 来源定位 (PDF) |
-| :--- | :--- | :--- | :--- |
-| $N$ | 1000 | 神经元总数 | 第7页 右栏 第2段 |
-| $N_E$ | 800 (80%) | 兴奋性神经元数量 | 第7页 右栏 第2段 |
-| $N_I$ | 200 (20%) | 抑制性神经元数量 | 第7页 右栏 第2段 |
-| $p$ | 0.2 | 连接概率（随机连接） | 第7页 左栏 "Appendix A" 第1段 / 右栏 第2段 |
+Processing tau_I = 2.0 ms...
+  Sensitivity: 0.0548 (Base=10.36Hz, Sig=10.93Hz)
+  Measuring Reliability (100 trials)...
+  Reliability: 0.1165
 
-### 2.2 神经元动力学参数 (LIF模型)
-对应方程：公式 (A1)
-$$ \frac{dV_i}{dt} = \frac{1}{\tau_\alpha}(V_{rest} - V_i) + I_i^{rec} + I_i $$
+Processing tau_I = 2.5 ms...
+  Sensitivity: 0.0705 (Base=10.53Hz, Sig=11.27Hz)
+  Measuring Reliability (100 trials)...
+  Reliability: 0.0960
 
-| 参数符号 | 参数值 | 描述 | 来源定位 (PDF) |
-| :--- | :--- | :--- | :--- |
-| $V_{rest}$ | -60 mV | 静息电位 (复位电位) | 第7页 右栏 公式(A1)下方 |
-| $V_{rev}^{leak}$ | -70 mV | 漏电流反转电位 | 第7页 右栏 公式(A1)下方 |
-| $V_{th}$ | -50 mV | 发放阈值 | 第7页 右栏 第一段 (续) |
-| $\tau_E$ | 20 ms | 兴奋性神经元膜时间常数 | 第7页 右栏 公式(A1)下方 |
-| $\tau_I$ | 10 ms | 抑制性神经元膜时间常数 | 第7页 右栏 第一段 (续) |
-| $t_{ref}^E$ | 2 ms | 兴奋性不应期 | 第7页 右栏 第一段 (续) |
-| $t_{ref}^I$ | 1 ms | 抑制性不应期 | 第7页 右栏 第一段 (续) |
+Processing tau_I = 3.0 ms...
+  Sensitivity: 0.0865 (Base=10.76Hz, Sig=11.69Hz)
+  Measuring Reliability (100 trials)...
+  Reliability: 0.0935
 
-### 2.3 突触动力学参数
-对应方程：公式 (A2, A3) - 双指数电导模型
-$$ F_\beta = \frac{1}{\tau^d_\beta - \tau_r} (e^{-t/\tau^d_\beta} - e^{-t/\tau_r}) $$
+Processing tau_I = 4.0 ms...
+  Sensitivity: 0.0598 (Base=10.92Hz, Sig=11.57Hz)
+  Measuring Reliability (100 trials)...
+  Reliability: 0.0830
 
-| 参数符号 | 参数值 | 描述 | 来源定位 (PDF) |
-| :--- | :--- | :--- | :--- |
-| $V_{rev}^E$ | 0 mV | 兴奋性反转电位 (AMPA) | 第7页 右栏 公式(A2)下方 |
-| $V_{rev}^I$ | -70 mV | 抑制性反转电位 (GABA) | 第7页 右栏 公式(A2)下方 |
-| $\tau_r$ | 0.5 ms | 突触上升时间常数 | 第7页 右栏 公式(A3)下方 |
-| $\tau^d_E$ | 2 ms | 兴奋性突触衰减时间 (AMPA) | 第7页 右栏 公式(A3)下方 |
-| **$\tau^d_I$** | **2 - 11 ms** | **核心控制参数** (GABA) | 第7页 右栏 底部 (控制临界相变) |
-| $g_{EE}$ | 0.012 | E -> E 突触权重 | 第7页 右栏 底部 |
-| $g_{IE}$ | 0.024 | E -> I 突触权重 | 第7页 右栏 底部 |
-| $g_{EI}$ | 0.18 | I -> E 突触权重 | 第7页 右栏 底部 (注：原文写为第二个$g_{IE}$，根据上下文和E-I平衡惯例修正为$g_{EI}$) |
-| $g_{II}$ | 0.31 | I -> I 突触权重 | 第7页 右栏 底部 |
+Processing tau_I = 5.0 ms...
+  Sensitivity: 0.0069 (Base=11.34Hz, Sig=11.42Hz)
+  Measuring Reliability (100 trials)...
+  Reliability: 0.0724
 
-### 2.4 外部驱动参数
-模型通过泊松背景噪声驱动。
-$$ I_i \text{ represents background input... } N_o = p N_E $$
+Processing tau_I = 6.0 ms...
+  Sensitivity: 0.0079 (Base=11.39Hz, Sig=11.48Hz)
+  Measuring Reliability (100 trials)...
+  Reliability: 0.0720
 
-| 参数符号 | 参数值 | 描述 | 来源定位 (PDF) |
-| :--- | :--- | :--- | :--- |
-| $N_o$ | 160 | 每个神经元接收的外部输入源数量 ($0.2 \times 800$) | 第7页 右栏 底部 |
-| $Q_o$ | 25 Hz | 外部输入频率 | 第8页 左栏 第一段 ($Q_o = 25$ Hz) |
-| $g_{Eo}$ | 0.022 | 外部 -> E 耦合强度 | 第8页 左栏 第一段 |
-| $g_{Io}$ | 0.04 | 外部 -> I 耦合强度 | 第8页 左栏 第一段 |
+Processing tau_I = 7.0 ms...
+  Sensitivity: 0.1374 (Base=10.72Hz, Sig=12.19Hz)
+  Measuring Reliability (100 trials)...
+  Reliability: 0.0665
 
----
+Processing tau_I = 7.5 ms...
+  Sensitivity: 0.0718 (Base=11.11Hz, Sig=11.90Hz)
+  Measuring Reliability (100 trials)...
+  Reliability: 0.0670
 
-## 3. 阶段二：网络结构与动力学实现 (BrainPy设计)
+Processing tau_I = 8.0 ms...
+  Sensitivity: 0.0083 (Base=11.51Hz, Sig=11.61Hz)
+  Measuring Reliability (100 trials)...
+  Reliability: 0.0644
 
-本阶段将数学方程映射到 BrainPy 的类结构中。
+Processing tau_I = 8.2 ms...
+  Sensitivity: 0.1047 (Base=11.04Hz, Sig=12.20Hz)
+  Measuring Reliability (100 trials)...
+  Reliability: 0.0630
 
-### 3.1 神经元模型类 (NeuronGroup)
-*   **基类选择**：`brainpy.dyn.LifRef`
-*   **实现细节**：
-    *   需要分别实例化 `group_E` 和 `group_I`，因为它们的 `tau` 和 `ref` 参数不同。
-    *   **积分方式**：使用 Exponential Euler 或 RK4，步长建议 $dt=0.05$ ms (高精度要求)。
-    *   **输入处理**：该模型是基于电导的 (Conductance-based)。BrainPy 的标准 LIF 接收电流输入。
-    *   **关键转换**：需在突触层计算电流 $I_{syn}(t) = g(t)(V_{rev} - V_i(t))$，并将其作为 `input` 传入神经元。
+Processing tau_I = 9.0 ms...
+  Sensitivity: -0.0459 (Base=11.65Hz, Sig=11.11Hz)
+  Measuring Reliability (100 trials)...
+  Reliability: 0.0583
 
-### 3.2 突触投影类 (SynapticProjection)
-*   **基类选择**：自定义类，继承自 `brainpy.dyn.Projection` 或 `brainpy.dyn.TwoEndConn`。
-*   **动力学实现 (公式 A3)**：
-    *   公式 A3 描述的是双指数滤波器。这等价于两个耦合的一阶微分方程。
-    *   定义变量 `g` (电导) 和 `h` (辅助变量)。
-    *   **微分方程组**：
-        $$ \frac{dh}{dt} = -\frac{h}{\tau_r} + \sum \delta(t-t_k) $$
-        $$ \frac{dg}{dt} = -\frac{g}{\tau^d} + h $$
-    *   **归一化**：注意公式 A3 包含系数 $\frac{1}{\tau^d - \tau_r}$。在代码中，突触权重更新时应乘以该归一化因子，或者在计算电流时统一处理。
-*   **连接矩阵**：使用 `brainpy.conn.FixedProb(prob=0.2)`。
+Processing tau_I = 10.0 ms...
+  Sensitivity: 0.0444 (Base=11.43Hz, Sig=11.94Hz)
+  Measuring Reliability (100 trials)...
+  Reliability: 0.0594
 
-### 3.3 网络组装 (NetworkAssembly)
-需构建 6 个突触投影实例：
-1.  Ext -> E (AMPA dynamics)
-2.  Ext -> I (AMPA dynamics)
-3.  E -> E (AMPA dynamics)
-4.  E -> I (AMPA dynamics)
-5.  I -> E (GABA dynamics, **$\tau^d_I$ 可变**)
-6.  I -> I (GABA dynamics, **$\tau^d_I$ 可变**)
+Processing tau_I = 11.0 ms...
+  Sensitivity: 0.0169 (Base=11.46Hz, Sig=11.65Hz)
+  Measuring Reliability (100 trials)...
+  Reliability: 0.0549
 
----
+============================================================
+Running Branching Model (Control)
+============================================================
+Processing branching param m = 0.8...
+Running for 1,000 iterations: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:00<00:00, 13676.22it/s]
+  Sens=0.000, Rel=0.054
+Processing branching param m = 0.9...
+Running for 1,000 iterations: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:00<00:00, 13792.97it/s]
+  Sens=0.000, Rel=0.013
+Processing branching param m = 0.95...
+Running for 1,000 iterations: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:00<00:00, 14373.21it/s]
+  Sens=0.000, Rel=0.003
+Processing branching param m = 0.98...
+Running for 1,000 iterations: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:00<00:00, 15334.82it/s]
+  Sens=0.000, Rel=0.000
+Processing branching param m = 1.0...
+Running for 1,000 iterations: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:00<00:00, 14897.30it/s]
+  Sens=0.000, Rel=0.000
+Processing branching param m = 1.02...
+Running for 1,000 iterations: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:00<00:00, 13226.78it/s]
+  Sens=0.000, Rel=0.001
+Processing branching param m = 1.05...
+Running for 1,000 iterations: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:00<00:00, 13792.29it/s]
+  Sens=0.000, Rel=0.012
 
-## 4. 阶段三：模拟运行与数据采集
-
-### 4.1 模拟配置
-*   **时间步长 ($dt$)**：0.05 ms (为了准确模拟 0.5ms 的 $\tau_{rise}$)。
-*   **总时长 ($T$)**：建议至少 1000 ms - 5000 ms 以获取足够的统计数据。
-*   **控制变量**：设置循环，分别运行以下三种情况：
-    *   亚临界 (Subcritical): $\tau^d_I = 2$ ms
-    *   临界 (Critical): $\tau^d_I = 8$ ms
-    *   超临界 (Supercritical): $\tau^d_I = 11$ ms
-
-### 4.2 监控器 (Monitors)
-*   记录所有兴奋性神经元的脉冲发放时间：`group_E.spike`。
-*   (可选) 记录部分神经元的膜电位 $V$ 以验证 sub-threshold 动力学。
-
----
-
-## 5. 阶段四：雪崩分析算法实现
-
-本阶段复现论文中关于“神经雪崩”的定义和统计方法。
-
-### 5.1 数据预处理
-*   **来源**：第8页 左栏 "Appendix B: Measurement..." 第二段。
-*   **步骤**：
-    1.  合并 `group_E` 中所有神经元的脉冲，得到群体脉冲序列 (Population Spike Train)。
-    2.  计算群体平均脉冲间隔 $\langle ISI \rangle$。
-    3.  **时间分箱 (Binning)**：设置时间窗口 $\Delta t = \langle ISI \rangle$。
-
-### 5.2 雪崩定义
-*   **来源**：第2页 正文 左栏 底部 / Appendix B。
-*   **算法**：
-    1.  将时间轴划分为宽度为 $\Delta t$ 的连续箱。
-    2.  计算每个箱内的总脉冲数。
-    3.  **雪崩开始**：一个非空箱（spikes > 0）。
-    4.  **雪崩结束**：随后的第一个空箱（spikes = 0）。
-    5.  **雪崩大小 (Size, $S$)**：雪崩持续期间所有箱内脉冲总和。
-    6.  **雪崩时长 (Duration, $T$)**：雪崩跨越的箱的数量（或物理时间）。
-
-### 5.3 统计验证 (输出交付物)
-*   绘制 $P(S)$ 和 $P(T)$ 的概率分布图（双对数坐标）。
-*   **预期结果**：
-    *   $\tau^d_I = 2$ ms：指数分布（下垂）。
-    *   $\tau^d_I = 8$ ms：幂律分布（直线），斜率接近 -1.5 (Size) 和 -2.0 (Duration)。
-    *   $\tau^d_I = 11$ ms：双峰分布或尾部隆起（"Bimodal/Bump"），表示过同步。
+Experiment Complete. Data saved to processed/ directory.
+(eib) PS C:\BrainpyEi\EI_Balanced_Criticality_Project> python C:\BrainpyEi\EI_Balanced_Criticality_Project\visualization\plot_response.py
+C:\BrainpyEi\EI_Balanced_Criticality_Project\visualization\plot_response.py:41: SyntaxWarning: invalid escape sequence '\D'
+  ax1.set_ylabel('Sensitivity ($\Delta r / r$)', color='#377eb8')
+Generating Sensitivity & Reliability Plots...
