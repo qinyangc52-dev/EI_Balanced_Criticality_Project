@@ -1,8 +1,13 @@
 # %% Enhanced Analysis for Sensitivity-Reliability Trade-off
 
+import sys
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
+from pathlib import Path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+from configs.model_config import PROCESSED_DATA_DIR, FIGURE_DIR
 
 def analyze_results(bn_data, bp_data):
     """
@@ -14,12 +19,12 @@ def analyze_results(bn_data, bp_data):
     
     # 灵敏度峰值
     max_sens_idx = bn_df['sensitivity'].idxmax()
-    max_sens_tau = bn_df.loc[max_sens_idx, 'tau_I']
+    max_sens_tau = bn_df.loc[max_sens_idx, 'tau']
     max_sens_val = bn_df.loc[max_sens_idx, 'sensitivity']
     
     # 可靠性峰值
     max_rel_idx = bn_df['reliability'].idxmax()
-    max_rel_tau = bn_df.loc[max_rel_idx, 'tau_I']
+    max_rel_tau = bn_df.loc[max_rel_idx, 'tau']
     max_rel_val = bn_df.loc[max_rel_idx, 'reliability']
     
     print("\n" + "="*60)
@@ -44,7 +49,7 @@ def analyze_results(bn_data, bp_data):
     )
     
     best_composite_idx = bn_df['composite_geometric'].idxmax()
-    best_tau = bn_df.loc[best_composite_idx, 'tau_I']
+    best_tau = bn_df.loc[best_composite_idx, 'tau']
     
     print(f"\n综合最优点 (几何平均): τ_I = {best_tau:.1f} ms")
     print(f"  - 灵敏度: {bn_df.loc[best_composite_idx, 'sensitivity']:.4f}")
@@ -56,7 +61,7 @@ def analyze_results(bn_data, bp_data):
     print("-"*60)
     
     for idx, row in bn_df.iterrows():
-        tau = row['tau_I']
+        tau = row['tau']
         sens = row['sensitivity']
         rel = row['reliability']
         
@@ -83,7 +88,7 @@ def plot_enhanced_analysis(bn_df):
     scatter = ax1.scatter(
         bn_df['sensitivity'], 
         bn_df['reliability'],
-        c=bn_df['tau_I'], 
+        c=bn_df['tau'], 
         cmap='viridis', 
         s=100,
         edgecolors='black',
@@ -98,14 +103,14 @@ def plot_enhanced_analysis(bn_df):
         bn_df.loc[max_sens_idx, 'sensitivity'],
         bn_df.loc[max_sens_idx, 'reliability'],
         marker='*', s=500, c='red', edgecolors='black', linewidths=2,
-        label=f"Max Sens (τ={bn_df.loc[max_sens_idx, 'tau_I']:.1f}ms)"
+        label=f"Max Sens (τ={bn_df.loc[max_sens_idx, 'tau']:.1f}ms)"
     )
     
     ax1.scatter(
         bn_df.loc[max_rel_idx, 'sensitivity'],
         bn_df.loc[max_rel_idx, 'reliability'],
         marker='s', s=300, c='blue', edgecolors='black', linewidths=2,
-        label=f"Max Rel (τ={bn_df.loc[max_rel_idx, 'tau_I']:.1f}ms)"
+        label=f"Max Rel (τ={bn_df.loc[max_rel_idx, 'tau']:.1f}ms)"
     )
     
     ax1.set_xlabel('Sensitivity (Δr/r)', fontsize=12)
@@ -119,11 +124,11 @@ def plot_enhanced_analysis(bn_df):
     
     # 2. 综合性能指标
     ax2 = axes[0, 1]
-    ax2.plot(bn_df['tau_I'], bn_df['composite_geometric'], 
+    ax2.plot(bn_df['tau'], bn_df['composite_geometric'], 
              'o-', linewidth=2.5, markersize=8, color='purple', label='Geometric Mean')
-    ax2.axvline(bn_df.loc[bn_df['composite_geometric'].idxmax(), 'tau_I'],
+    ax2.axvline(bn_df.loc[bn_df['composite_geometric'].idxmax(), 'tau'],
                 color='red', linestyle='--', linewidth=2, alpha=0.7, label='Optimal')
-    ax2.set_xlabel('τ_I (ms)', fontsize=12)
+    ax2.set_xlabel('τ (ms)', fontsize=12)
     ax2.set_ylabel('Composite Performance', fontsize=12)
     ax2.set_title('Overall Performance Index', fontsize=13, weight='bold')
     ax2.legend(fontsize=10)
@@ -142,11 +147,11 @@ def plot_enhanced_analysis(bn_df):
     ax3.bar(x + width/2, rel_norm, width, label='Reliability (norm)', 
             color='#e41a1c', alpha=0.8, edgecolor='black')
     
-    ax3.set_xlabel('τ_I (ms)', fontsize=12)
+    ax3.set_xlabel('τ (ms)', fontsize=12)
     ax3.set_ylabel('Normalized Score', fontsize=12)
     ax3.set_title('Normalized Metrics Comparison', fontsize=13, weight='bold')
     ax3.set_xticks(x)
-    ax3.set_xticklabels([f"{t:.1f}" for t in bn_df['tau_I']], rotation=45)
+    ax3.set_xticklabels([f"{t:.1f}" for t in bn_df['tau']], rotation=45)
     ax3.legend(fontsize=10)
     ax3.grid(axis='y', alpha=0.3)
     
@@ -159,18 +164,19 @@ def plot_enhanced_analysis(bn_df):
     )
     
     colors = plt.cm.RdYlGn_r(distances / distances.max())
-    ax4.barh(bn_df['tau_I'], distances, color=colors, edgecolor='black')
+    ax4.barh(bn_df['tau'], distances, color=colors, edgecolor='black')
     ax4.set_xlabel('Distance to Ideal Point', fontsize=12)
-    ax4.set_ylabel('τ_I (ms)', fontsize=12)
+    ax4.set_ylabel('τ (ms)', fontsize=12)
     ax4.set_title('Deviation from Ideal (S=1, R=1)', fontsize=13, weight='bold')
     ax4.grid(axis='x', alpha=0.3)
     ax4.invert_yaxis()
     
     plt.tight_layout()
-    plt.savefig('figures/enhanced_analysis.png', dpi=300, bbox_inches='tight')
+    out_path = Path(FIGURE_DIR) / 'enhanced_analysis.png'
+    plt.savefig(out_path, dpi=300, bbox_inches='tight')
     plt.show()
     
-    print("\n✓ 增强分析图已保存到 figures/enhanced_analysis.png")
+    print(f"\n✓ 增强分析图已保存到 {out_path}")
 
 
 def suggest_next_experiments(bn_df):
@@ -182,7 +188,7 @@ def suggest_next_experiments(bn_df):
     print("="*60)
     
     # 找到有趣的区域
-    max_sens_tau = bn_df.loc[bn_df['sensitivity'].idxmax(), 'tau_I']
+    max_sens_tau = bn_df.loc[bn_df['sensitivity'].idxmax(), 'tau']
     
     print(f"\n1. 高分辨率扫描建议:")
     print(f"   在 τ_I = {max_sens_tau-1:.1f} 到 {max_sens_tau+1:.1f} ms 之间")
@@ -208,10 +214,15 @@ if __name__ == "__main__":
     # 加载数据
     import pickle
     
-    with open('EI_Balanced_Criticality_Project\data\processed\sensitivity_reliability_bn.pkl', 'rb') as f:
+    bn_path = Path(PROCESSED_DATA_DIR) / 'sensitivity_reliability_bn.pkl'
+    bp_path = Path(PROCESSED_DATA_DIR) / 'sensitivity_reliability_bp.pkl'
+    if not bn_path.exists() or not bp_path.exists():
+        print(f"数据文件不存在:\n  bn: {bn_path}\n  bp: {bp_path}\n请先运行 experiments/sensitivity_reliability.py 生成数据。")
+        raise FileNotFoundError(str(bn_path if not bn_path.exists() else bp_path))
+    with open(bn_path, 'rb') as f:
         bn_data = pickle.load(f)
     
-    with open('EI_Balanced_Criticality_Project\data\processed\sensitivity_reliability_bp.pkl', 'rb') as f:
+    with open(bp_path, 'rb') as f:
         bp_data = pickle.load(f)
     
     # 分析

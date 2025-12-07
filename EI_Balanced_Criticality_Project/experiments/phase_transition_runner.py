@@ -1,5 +1,6 @@
 # %% Stage 3: Experiments - Main Simulation Loop for Phase Transition
 # FIXED: Memory Overflow Fix using Chunked Simulation
+# FIXED: Random seed reset for reproducibility across tau values
 # Iterates over tau_d_I values and records spike trains
 
 import brainpy as bp
@@ -9,7 +10,7 @@ import gc  # Garbage Collector
 from pathlib import Path
 from configs.model_config import (
     TAU_DECAY_I_LIST, DT, DURATION, WARMUP,
-    RAW_DATA_DIR
+    RAW_DATA_DIR, SEED
 )
 from models.network import BalancedNetwork
 from core.inputs import PoissonInput
@@ -22,21 +23,40 @@ class PhaseTransitionRunner:
     Includes memory optimization for long simulations.
     """
     
-    def __init__(self, tau_d_I_list=None):
+    def __init__(self, tau_d_I_list=None, seed=None):
         self.tau_d_I_list = tau_d_I_list if tau_d_I_list else TAU_DECAY_I_LIST
+        self.seed = seed if seed is not None else SEED
         Path(RAW_DATA_DIR).mkdir(parents=True, exist_ok=True)
     
     def run_single_tau(self, tau_d_I: float):
         """
         Run simulation for a single tau_d_I value.
         Uses CHUNKED execution to prevent Out-Of-Memory errors during long runs.
+        
+        FIXED: Added proper state cleanup and random seed reset to ensure
+        reproducibility and prevent state leakage between different tau runs.
         """
         print(f"\n{'='*60}")
         print(f"Running simulation: tau_d_I = {tau_d_I:.1f} ms")
         print(f"{'='*60}")
         
-        # 1. Setup Network and Input
+        # ========== CRITICAL FIX: Complete State Reset ==========
+        # 1. Clear BrainPy internal caches
         bm.clear_name_cache()
+        
+        # 2. Reset random seed (CRITICAL for reproducibility)
+        # This ensures each tau value starts with the same random sequence
+        bm.random.seed(self.seed)
+        np.random.seed(self.seed)
+        
+        # 3. Reset global time variables
+        bp.share.save(t=0.0, dt=DT, i=0)
+        
+        # 4. Force garbage collection
+        gc.collect()
+        # ========================================================
+        
+        # 1. Setup Network and Input
         tau_name = str(tau_d_I).replace('.', '_')
         net = BalancedNetwork(tau_d_I=tau_d_I, name=f'BalancedNet_{tau_name}')
         ext_input = PoissonInput(net, name=f'PoissonInput_{tau_name}')
@@ -127,8 +147,7 @@ class PhaseTransitionRunner:
             
             # 5. Clean up Memory
             del runner
-            # bm.clear_buffer_memory()  <--- 注释掉这一行，或者直接删掉
-            gc.collect()             # Force Python GC
+            gc.collect()  # Force Python GC
 
         # 6. Concatenate Results
         if len(all_spike_times) > 0:

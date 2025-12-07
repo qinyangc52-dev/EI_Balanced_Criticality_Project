@@ -64,7 +64,7 @@ def run_balanced_network_experiment(tau_list=None):
         tau_list = TAU_DECAY_I_LIST
 
     print(f"\n{'='*60}")
-    print(f"Running Balanced Network: Sensitivity & Reliability")
+    print(f"Running Balanced Network: Sensitivity & Reliability (Averaged)")
     print(f"{'='*60}")
 
     results = {
@@ -73,65 +73,95 @@ def run_balanced_network_experiment(tau_list=None):
         'reliability': []
     }
 
-    # Signal Parameters
-    duration = 1000.0 # ms
-    steps = int(duration / DT)
+    # ==========================================
+    # 1. 设置实验参数 (确保时长一致)
+    # ==========================================
+    # 建议使用 2000ms 以获得更稳定的统计结果
+    SIM_DURATION = 2000.0  
+    steps = int(SIM_DURATION / DT)
     signal_freq = 25.0 # Hz
-    n_trials = 100
     
-    # Pre-generate ONE frozen signal pattern for all trials
-    print("Generating Frozen Signal Template...")
+    # 敏感度测试的平均次数 (增加到 30 次以消除临界噪声)
+    N_SENSITIVITY_TRIALS = 30 
+    
+    # 可靠性测试的次数 (保持 100 次)
+    N_RELIABILITY_TRIALS = 100
+
+    # ==========================================
+    # 2. 生成冻结信号 (Frozen Signal)
+    # ==========================================
+    # 必须在循环之前定义，且长度必须等于 steps
+    print(f"Generating Frozen Signal Template ({SIM_DURATION} ms)...")
     np.random.seed(SEED)
     prob = signal_freq * DT / 1000.0
-    # Shape: (Steps, N_E). Only drive E neurons with signal for clarity
+    # Shape: (Steps, N_E). 仅驱动兴奋性神经元
     frozen_signal = (np.random.rand(steps, N_E) < prob).astype(float)
 
+    # ==========================================
+    # 3. 开始循环扫描 tau
+    # ==========================================
     for tau in tau_list:
         print(f"\nProcessing tau_I = {tau} ms...")
         
-        # --- Part A: Sensitivity (Baseline vs Signal) ---
-        # 1. Baseline (Background Only)
-        bp.math.clear_name_cache() # Clear cache before creating new network
-        bm.random.seed(SEED) # Reset seed for consistency
-        net_base = BalancedNetwork(tau_d_I=tau)
-        input_base = PoissonInput(net_base) # Standard background
-        runner_base = bp.DSRunner(
-            bp.DynSysGroup(net=net_base, inp=input_base),
-            monitors={'spikes': net_base.E.spike},
-            dt=DT, progress_bar=False
-        )
-        runner_base.run(duration)
-        r_base = np.mean(runner_base.mon['spikes']) * 1000.0 / DT # Hz per neuron
+        # --- Part A: Sensitivity (多试验平均) ---
+        print(f"  Measuring Sensitivity (Averaging over {N_SENSITIVITY_TRIALS} trials)...")
         
-        # 2. Signal (Background + Signal)
-        bp.math.clear_name_cache() # Clear cache before creating new network
-        bm.random.seed(SEED + 1)
-        net_sig = BalancedNetwork(tau_d_I=tau)
-        # Create injector that adds Frozen Signal on top of Background
-        # We wrap the network to access it inside injector
-        net_sig.network = net_sig 
-        input_sig = FrozenPoissonInjector(net_sig, frozen_signal)
+        r_base_sum = 0.0
+        r_sig_sum = 0.0
         
-        runner_sig = bp.DSRunner(
-            bp.DynSysGroup(net=net_sig, inp=input_sig),
-            monitors={'spikes': net_sig.E.spike},
-            dt=DT, progress_bar=False
-        )
-        runner_sig.run(duration)
-        r_sig = np.mean(runner_sig.mon['spikes']) * 1000.0 / DT
-        
-        sens = compute_sensitivity(r_base, r_sig)
-        print(f"  Sensitivity: {sens:.4f} (Base={r_base:.2f}Hz, Sig={r_sig:.2f}Hz)")
+        # A1. 跑 Baseline (纯背景噪声)
+        for i in range(N_SENSITIVITY_TRIALS):
+            bp.math.clear_name_cache()
+            # 关键：每次随机种子不同，模拟不同的自发背景活动
+            bm.random.seed(SEED + i * 10) 
+            
+            net_base = BalancedNetwork(tau_d_I=tau)
+            input_base = PoissonInput(net_base)
+            
+            runner_base = bp.DSRunner(
+                bp.DynSysGroup(net=net_base, inp=input_base),
+                monitors={'spikes': net_base.E.spike},
+                dt=DT, progress_bar=False
+            )
+            runner_base.run(SIM_DURATION)
+            r_base_sum += np.mean(runner_base.mon['spikes']) * 1000.0 / DT
+            
+        # A2. 跑 Signal (背景噪声 + 冻结信号)
+        for i in range(N_SENSITIVITY_TRIALS):
+            bp.math.clear_name_cache()
+            # 关键：种子与 Baseline 对应组不同，或者是新的一组随机种子
+            # 但Frozen Signal本身在所有trials里是一样的(由FrozenPoissonInjector保证)
+            bm.random.seed(SEED + i * 10 + 1000) 
+            
+            net_sig = BalancedNetwork(tau_d_I=tau)
+            net_sig.network = net_sig 
+            # 这里使用了上面定义的 frozen_signal
+            input_sig = FrozenPoissonInjector(net_sig, frozen_signal)
+            
+            runner_sig = bp.DSRunner(
+                bp.DynSysGroup(net=net_sig, inp=input_sig),
+                monitors={'spikes': net_sig.E.spike},
+                dt=DT, progress_bar=False
+            )
+            runner_sig.run(SIM_DURATION)
+            r_sig_sum += np.mean(runner_sig.mon['spikes']) * 1000.0 / DT
 
-        # --- Part B: Reliability (Repeated Trials) ---
-        print(f"  Measuring Reliability ({n_trials} trials)...")
-        pop_spike_counts = [] # Store (Time,) for each trial
+        # 计算平均发放率
+        r_base_avg = r_base_sum / N_SENSITIVITY_TRIALS
+        r_sig_avg = r_sig_sum / N_SENSITIVITY_TRIALS
         
-        for i in range(n_trials):
-            # Reset network state but KEEP frozen signal same
-            # Change random seed for Background Noise
-            bp.math.clear_name_cache() # Clear cache before creating new network
-            bm.random.seed(SEED + 100 + i) 
+        # 计算敏感度
+        sens = compute_sensitivity(r_base_avg, r_sig_avg)
+        print(f"  Sensitivity: {sens:.4f} (Base={r_base_avg:.2f}Hz, Sig={r_sig_avg:.2f}Hz)")
+
+        # --- Part B: Reliability (重复试验) ---
+        print(f"  Measuring Reliability ({N_RELIABILITY_TRIALS} trials)...")
+        pop_spike_counts = [] 
+        
+        for i in range(N_RELIABILITY_TRIALS):
+            bp.math.clear_name_cache()
+            # 改变背景噪声种子，但保持冻结信号不变
+            bm.random.seed(SEED + 2000 + i) 
             
             net_rel = BalancedNetwork(tau_d_I=tau)
             net_rel.network = net_rel
@@ -142,14 +172,12 @@ def run_balanced_network_experiment(tau_list=None):
                 monitors={'spikes': net_rel.E.spike},
                 dt=DT, progress_bar=False
             )
-            runner_rel.run(duration)
+            runner_rel.run(SIM_DURATION)
             
-            # Count population spikes per step
-            # mon['spikes'] shape: (Steps, N_E) -> Sum to (Steps,)
+            # 统计群体脉冲数 (用于 Fano Factor)
             trial_pop_spikes = np.sum(runner_rel.mon['spikes'], axis=1)
             pop_spike_counts.append(trial_pop_spikes)
             
-        # Shape: (n_trials, n_steps)
         all_trials_spikes = np.stack(pop_spike_counts)
         
         reliability = compute_reliability(
@@ -160,7 +188,7 @@ def run_balanced_network_experiment(tau_list=None):
         )
         print(f"  Reliability: {reliability:.4f}")
         
-        # Store
+        # 存储结果
         results['tau'].append(tau)
         results['sensitivity'].append(sens)
         results['reliability'].append(reliability)
@@ -200,11 +228,6 @@ def run_branching_model_experiment():
         rate_base = np.mean(runner_base.mon['state'])
         
         # Evoked (Input = Frozen Signal)
-        # Note: In branching model, input is usually added to probability
-        # We need a custom runner loop or modified class to inject frozen input.
-        # For simplicity, we assume the class handles `bp_base.input` update if we inject it.
-        # Let's run a loop manually for the signal trial to inject input.
-        
         state_sum_sig = 0
         bp.math.clear_name_cache() # Clear cache
         bp_sig = BranchingProcess(size=1000, branching_parameter=m, input_strength=0.0001)
@@ -249,7 +272,6 @@ def run_branching_model_experiment():
 if __name__ == "__main__":
     # 1. Run Balanced Network
     # Use a subset for quick testing, or full list for paper
-    # target_taus = [2.0, 8.0, 11.0] 
     target_taus = TAU_DECAY_I_LIST 
     
     bn_data = run_balanced_network_experiment(target_taus)

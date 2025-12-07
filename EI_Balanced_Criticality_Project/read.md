@@ -1,61 +1,75 @@
-project_root/
-├── README.md                  # 项目说明书
-│                              
-├── main.py                    # 主程序入口
-│                                负责完整工作流：模拟 → 分析 → 输出统计结果
-│                                支持 --all（全参数扫描） 或 --tau（单参数调试）
-├── quick_test.py              # 快速验证脚本
-│                                短时程（200ms）模拟，检查发放率是否合理（1-5 Hz）
+EI_Balanced_Criticality_Project/
 │
-├── configs/
-│   └── model_config.py        # 参数单点真相源（SSOT）
-│                                定义 N, p, τ, g, TAU_DECAY_I_LIST, 路径等所有全局常量
+├── 📜 main.py                    # [入口] 主程序
+│                                   负责协调完整工作流：调用模拟器生成数据 -> 调用分析器处理数据 -> 输出统计结果。
 │
-├── core/
-│   └── inputs.py              # 外部泊松输入生成器
-│                                PoissonInput 类，生成背景电导噪声（带正确归一化）
+├── 📜 quick_test.py              # [测试] 快速验证脚本
+│                                   运行短时程（如 200ms）模拟，用于快速检查网络发放率是否正常（目标 1-5 Hz），无需跑完长时程仿真。
 │
-├── models/
-│   ├── neurons.py             # LIF 神经元实现（带绝对不应期）
-│   │                            LifRefE（兴奋性）、LifRefI（抑制性）
-│   ├── synapses.py            # 双指数电导突触模型
-│   │                            DualExpCondSyn（Rise + Decay）
-│   └── network.py             # 完整兴奋-抑制平衡网络组装
-│                                BalancedNetwork（包含 E/I 神经元 + 4种突触连接）
+├── 📜 README.md                  # [文档] 项目说明书
+│                                   包含项目架构说明、安装依赖和运行指南。
 │
-├── experiments/
-│   └── phase_transition_runner.py   # 相变扫描主运行器
-│                                      遍历所有 τ^d_I，分块模拟（防OOM），输出原始脉冲 .npz
+├── 📂 configs/                   # [配置] 参数配置中心 (SSOT)
+│   └── model_config.py             # 定义所有全局常量：网络规模(N)、连接概率(p)、时间常数(tau)、突触电导(g)、文件路径等。
+│                                   修改此处可影响整个项目，确保参数一致性。
 │
-├── analysis/
-│   ├── preprocessing.py       # 预处理 + 雪崩检测
-│         ├─ 去温（warmup）
-│         ├─ 计算人口 ISI → 确定分箱宽度 Δt（论文 Appendix B）
-│         └─ 空箱分隔法检测雪崩 → 提取大小 S 和时长 T
-│   └── avalanche_metrics.py   # 临界性指标计算
-│         ├─ MLE 拟合幂律（τ, α）
-│         ├─ KS 距离
-│         └─ Crackling Noise Relation 验证 + 标度误差
-│                                输出 .pkl 统计结果
+├── 📂 core/                      # [核心] 基础组件
+│   └── inputs.py                   # 外部输入生成器
+│                                   实现 PoissonInput 类，为网络提供背景泊松噪声支持，模拟外部驱动。
 │
-├── visualization/
-│   ├── plot_criticality.py         # 主图（Fig 1 复现）
-│         ├─ 光栅图（亚/临/超临界示例）
-│         ├─ 雪崩大小/时长分布
-│         └─ KS 距离 vs τ^d_I 曲线（定位临界点）
-│   └── plot_scaling_relation.py    # 补充图 S2 复现
-│                                      <S>(T) 标度关系，验证 γ = (α-1)/(τ-1)
+├── 📂 models/                    # [模型] 神经动力学模型库
+│   ├── neurons.py                  # 神经元实现
+│   │                               包含 LifRefE (兴奋性) 和 LifRefI (抑制性) 类，实现了带绝对不应期的 LIF 模型方程。
+│   ├── synapses.py                 # 突触实现
+│   │                               包含 DualExpCondSyn 类，实现了双指数（Rise+Decay）电导突触。
+│   │                               *特色*：采用 "SAFEST" 模式，完全手写更新逻辑以避免 BrainPy 递归问题。
+│   ├── network.py                  # 网络组装
+│   │                               包含 BalancedNetwork 类，将神经元和突触组装成 E-I 平衡网络。
+│   │                               *特色*：实现了手动 update 顺序控制（先神经元后突触），确保数值积分稳定性。
+│   └── branching.py                # 控制组模型
+│                                   实现经典的分支过程（Branching Process）模型，用于作为与生物神经网络对比的基准（Control Experiment）。
 │
-├── utils/
-│   └── io_manager.py          # 统一的 I/O 封装
-│                                save/load npz、pkl，自动创建文件夹，跨平台路径兼容
+├── 📂 experiments/               # [实验] 仿真运行器
+│   ├── phase_transition_runner.py  # 相变扫描主程序 (针对临界性)
+│   │                               负责遍历不同的抑制性衰减时间常数 (tau_d_I)，运行长时程模拟。
+│   │                               *优化*：实现了分块模拟 (Chunked Simulation) 以防止内存溢出 (OOM)。
+│   ├── sensitivity_reliability.py  # 响应特性实验 (针对功能)
+│   │                               负责测量网络对扰动的“敏感性”和跨试验的“可靠性”，并与分支过程模型进行对比。
+│   └── run_pca_multistimuli.py     # PCA 降维分析实验
+│                                   (根据文件名推断) 用于在多重刺激条件下运行主成分分析，探索神经状态空间轨迹。
 │
-└── data/
-    ├── raw/                   # 原始脉冲数据（.npz）
-    └── processed/             # 分析后的统计结果（.pkl）
-└── figures/                   # 自动生成的出版级图片（.png/.pdf）
-
-
+├── 📂 analysis/                  # [分析] 数据处理与指标计算
+│   ├── preprocessing.py            # 数据预处理
+│   │                               负责去除热身数据 (Warmup)、计算种群 ISI 确定分箱宽度、以及从脉冲序列中检测雪崩事件。
+│   ├── avalanche_metrics.py        # 临界性指标计算
+│   │                               负责雪崩统计分析：使用最大似然估计 (MLE) 拟合幂律分布、计算 KS 距离、验证 Crackling Noise 标度关系。
+│   └── response_metrics.py         # 响应指标计算
+│                                   负责计算敏感性 (Sensitivity) 和可靠性 (Reliability, 基于 Fano Factor)。
+│
+├── 📂 visualization/             # [绘图] 结果可视化
+│   ├── plot_criticality.py         # 绘制临界性主图 (复现 Fig 1)
+│   │                               包括光栅图、雪崩大小/时长分布图、KS 距离随参数变化曲线。
+│   ├── plot_scaling_relation.py    # 绘制标度关系图 (复现 Fig S2)
+│   │                               验证雪崩平均大小与时长的幂律关系 <S> ~ T^gamma。
+│   ├── plot_response.py            # 绘制响应特性图
+│   │                               展示敏感性和可靠性随控制参数变化的曲线，寻找两者峰值的重合点。
+│   ├── plot_ks_analysis.py         # KS 距离分析图
+│   │                               专门用于展示幂律拟合优度 (KS Distance) 的最小化过程，以定位临界点。
+│   ├── generate_gs_rasters.py      # 生成光栅图脚本
+│   │                               专门用于批量生成不同参数下的精美光栅图 (Raster Plot)。
+│   └── generate_xb_plots.py        # 生成特定对比图脚本
+│                                   (推测) 可能用于生成不同实验批次 (Batch) 或特定条件下的对比图表。
+│
+├── 📂 utils/                     # [工具] 通用工具库
+│   └── io_manager.py               # I/O 管理器
+│                                   封装了数据的保存 (save_npz, save_pkl) 和加载逻辑，自动处理目录创建。
+│
+├── 📂 data/                      # [数据] 数据存储 (通常不上传到 git)
+│   ├── raw/                        # 原始仿真数据 (.npz, 包含脉冲时刻)
+│   └── processed/                  # 分析统计结果 (.pkl, 包含幂律指数、敏感性数值等)
+│
+└── 📂 figures/                   # [图表] 输出图片
+                                    存放所有可视化脚本生成的最终 .png 或 .pdf 图片。
 
 ## 敏感性与可靠性的测量
 本节描述了在兴奋-抑制（E-I）平衡网络模型和分支过程模型中测量**敏感性**（sensitivity）和**可靠性**（reliability）的方法，如 Yang et al. (2025) 论文所述。这些指标用于评估网络对外界信号的响应，突出临界态如何调和敏感性（检测小扰动的能力）与可靠性（跨试验一致响应）。
